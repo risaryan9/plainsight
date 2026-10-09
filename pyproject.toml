@@ -1,0 +1,6 @@
+[project]
+name = "plainsight"
+version = "0.1.0"
+description = "Android APK claim-vs-reality auditor"
+requires-python = ">=3.12"
+dependencies = []
