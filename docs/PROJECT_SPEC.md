@@ -17,7 +17,7 @@
 | | |
 |---|---|
 | **Status** | Draft reference (see the note above): hybrid demo architecture (laptop + one AWS Lambda) |
-| **Last updated** | 2026-10-09 (extraction layer, local API and Telegram bot built; see §7.7 status and D14–D24) |
+| **Last updated** | 2026-10-10 (extraction layer, claim side, local API and Telegram bot built; see the §7.7 and §7.8 status notes and `docs/DECISIONS.md`) |
 | **Audience** | Developers on the project, and Claude Code |
 | **Read first** | §1 (summary), §5 (architecture), §8 (contracts), §20 (rules for Claude Code) |
 
@@ -525,7 +525,7 @@ All Androguard calls go through **one adapter module** (`androguard_adapter.py`)
 - **R8/ProGuard renaming defeats package-prefix matching**: a minified app's bundled libraries appear as app code (`Ll7;->S`), so SDK detection and `in_sdk` under-report on obfuscated APKs.
 - **Validation uses Python's `zipfile`**, which is stricter than Android's own ZIP parser. APKs with deliberately malformed ZIP headers (an anti-analysis trick) are rejected as invalid rather than analysed.
 
-### 7.8 Claim side (`worker/pipeline/claim/`)
+### 7.8 Claim side (`worker/src/pipeline/claim/`)
 
 1. **Play Store lookup** by package name with the `google-play-scraper` Python package (unofficial). It provides the title, description, category (genre) and privacy-policy URL. The default country is `in` and the language `en`.
 2. **Privacy policy:** fetch the URL with `httpx` (timeout 10 s, max 2 MB) and extract the main text with `trafilatura`. Split it into sentence-level chunks, each with an evidence id (`pol_*`).
@@ -533,6 +533,16 @@ All Androguard calls go through **one adapter module** (`androguard_adapter.py`)
 4. **Cache** listings and policies by package name in S3 (`claims/{package}.json`, 7 days) to avoid re-scraping during repeated demos. This is optional in v1.
 
 The scraper can break when Play changes its pages. The pipeline must treat the claim fetch as **best effort** and never fail the scan because of it.
+
+**Status (2026-10-10): the claim side is built.** Entry points: `pipeline.claim.build_claim(package_name, app_label, caption) -> Claim` and `pipeline.run.run_pipeline(apk_path, caption)`, which returns `{schema_version: "pipeline.v1", apk, facts, claim, evidence, meta}`. Where the build differs from the four points above (details in `docs/DECISIONS.md`):
+
+- **Play lookup (D-030):** `google-play-scraper` 1.2.7 is used only to parse the page. Its own `app()` has no timeout, and importing it turns off TLS verification for all of `urllib`, so the page is fetched with httpx (10 s, verified TLS) and the TLS change is undone. A test guards this.
+- **Policy fetch (D-031):** http/https only, 10 s, 2 MB, at most 3 redirects, HTML or plain text only, with an **SSRF guard**: every address the host resolves to must be public, on every redirect, and the connection goes to the checked address while TLS still verifies the original hostname. `trafilatura` extracts the text, with BeautifulSoup as the fallback. At most 400 chunks.
+- **Chunks (D-037):** each chunk is one sentence or one table row and carries the headings above it: `section_path` (`["Permissions", "CAMERA"]`) and `section` (the last item). Retrieval must index `search_text` (path + sentence), not the sentence alone. A GitHub `blob` URL of a markdown file is fetched as the raw file and parsed as markdown.
+- **Policy status:** `fetched`, `not_found` (HTTP 404/410), `fetch_failed` (anything else, including a blocked URL) or `no_url`.
+- **Impersonation check (D-032):** a Play listing found by package name may describe a different app, because a malicious APK can reuse a real package name. If the APK's label and the Play title score below 0.5 on a simple name-similarity measure, `claim_possible_impersonation` is set.
+- **Cache (D-029):** local files `data/claims/<package>.json` for 3 days, not S3 for 7. The caption is never cached. Only the extraction is cached per APK; the claim is rebuilt for every request (D-028).
+- **Model (D-033, D-037):** `Claim` (`claim.v2`) in `worker/src/pipeline/claim/models.py` is a superset of the `claim` block in §8.4. `listing_chunks`, `flag_chunks` and `policy_chunks` hold the text behind every id in `claim.evidence`.
 
 ### 7.9 Feature engineering (`worker/pipeline/features/`)
 
@@ -700,11 +710,11 @@ All contracts are defined **once** as pydantic models in `packages/shared/`, exp
 | `sdk_` | SDK fingerprint | `package prefix com.google.android.gms.ads` |
 | `str_` | String-pool hit (URL/IP/secret) | `string "https://collect.example.net/v2"` in `Lcom/x/Net;->send()V` |
 | `file_` | File inside the APK archive | `apk file lib/arm64-v8a/libfoo.so` |
-| `pol_` | Privacy-policy sentence | chunk #14 of the policy at `<url>` |
+| `pol_` | Privacy-policy sentence or table row | chunk #14 (section "Permissions > CAMERA") of the policy at `<url>` |
 | `abs_` | Policy absence record | query "audio recording microphone", best score 0.08 < 0.25 |
-| `lst_` | Store listing / caption | Play description, or the user's caption |
+| `lst_` | Store listing / caption | Play description, or the user's caption. Fixed ids: `lst_001` is the listing, `lst_002` is the caption |
 | `ml_` | Model output | `classifier p=0.23; top features …` |
-| `claim_` | Special claim facts | `claim_not_on_play`, `claim_no_policy` |
+| `claim_` | Special claim facts (named ids, not numbered) | `claim_not_on_play`, `claim_no_policy`, `claim_policy_fetch_failed`, `claim_possible_impersonation` |
 
 Ids are unique within one report and stable for the same APK and pipeline version.
 
@@ -1108,7 +1118,7 @@ plainsight/
 ├── CLAUDE.md                     # short: "read docs/PROJECT_SPEC.md first; follow §20"
 ├── docs/
 │   ├── PROJECT_SPEC.md           # this file
-│   └── adr/                      # new decisions get a short ADR (see §21)
+│   └── DECISIONS.md              # decision log, including every dev-only shortcut (see §21)
 ├── pyproject.toml                # uv workspace root
 ├── uv.lock
 ├── docker-compose.yml            # postgres, api, bot, tunnel
@@ -1142,7 +1152,7 @@ plainsight/
 │   │       ├── run.py            # run_pipeline(): extraction → claim → features → ml → agents → scoring
 │   │       ├── extraction/       # analyze.py (analyze_apk), androguard_adapter.py, validate.py, models.py,
 │   │       │                     # api_usage.py, sdks.py, strings.py, evidence.py, knowledge.py, cli.py
-│   │       ├── claim/            # play.py, policy.py, chunking.py
+│   │       ├── claim/            # claim.py (build_claim), play.py, policy.py (guarded fetch), chunking.py, cache.py, models.py
 │   │       ├── features/         # vectorize.py, schema_guard.py
 │   │       ├── ml/               # inference.py, shap_explain.py, peer.py, stubs.py
 │   │       ├── agents/           # graph.py, nodes/, tools.py, prompts/, verifier.py
@@ -1192,9 +1202,12 @@ plainsight/
 | `TELEGRAM_BOT_TOKEN` | bot, worker | — | From @BotFather |
 | `INTERNAL_TOKEN` | bot, api | random 32 bytes | Authorises bot → API |
 | `API_URL` | bot | `http://localhost:8000` | Where the bot reaches the API (was `API_INTERNAL_URL`; `http://api:8000` under Compose) |
-| `REPORTS_DIR` | api | `data/reports` | Local report cache: `<sha256>__<pipeline_version>.json` (gitignored) |
+| `REPORTS_DIR` | api | `data/reports` | Local report cache: `<sha256>__<pipeline_version>.json` (gitignored). The combined report is saved beside it as `….combined.json` (D-034) |
+| `CLAIMS_DIR` | api | `data/claims` | Local claim cache: `<package>.json`, kept 3 days (gitignored, D-029) |
 | `SCAN_LOCK_TIMEOUT_S` | api | `20` | How long `/scan` waits for a running scan before answering 503 |
 | `SCAN_TIMEOUT_S` | bot | `120` | How long the bot waits for `/scan` |
+| `DEV_SEND_JSON` | bot | `true` | **Dev only (D-035):** also send `extraction_<package>.json` and `claim_<package>.json` to the chat |
+| `RUN_LIVE_TESTS` | tests | unset | `1` enables the one test that calls the real Play Store |
 | `PUBLIC_BASE_URL` | api | `https://<tunnel-host>` | Used to build `callback_url` / `report_url` |
 | `DATABASE_URL` | api | `postgresql+psycopg://app:app@postgres:5432/app` | |
 | `WORKER_MODE` | api | `local` \| `lambda` | `local` runs the pipeline in-process |
@@ -1453,7 +1466,7 @@ As the note at the top of this file says, the whole document is a **reference**.
 - [ ] New logic has unit tests; contract changes include regenerated schema/types.
 - [ ] Works in `WORKER_MODE=local`; if the worker changed, `sam build` succeeds.
 - [ ] No secrets, APKs or model files staged.
-- [ ] This spec is updated if behaviour, contracts or architecture changed (and an ADR is added for a new decision).
+- [ ] This spec is updated if behaviour, contracts or architecture changed (and an entry is added to `docs/DECISIONS.md` for a new decision).
 
 ### 20.5 Progress checklist (update as phases complete)
 
@@ -1469,35 +1482,7 @@ As the note at the top of this file says, the whole document is a **reference**.
 
 ## 21. Decision log
 
-| # | Decision | Alternatives considered | Why |
-|---|---|---|---|
-| D1 | **Static analysis only** | Dynamic analysis in emulators/sandboxes | Safe to build and demo; no malware ever runs; fits Lambda |
-| D2 | **Telegram as the front door** (+ web dashboard) | Native Android app; WhatsApp first; web only | Matches how scam APKs actually arrive; five-minute bot setup; free; WhatsApp needs Meta Business setup (future) |
-| D3 | **Hybrid hosting: laptop + one Lambda** | Fully serverless (API Gateway + many Lambdas + DynamoDB); one big VM | Fully serverless was too much AWS for the purpose and harder to debug; one VM loses isolation for hostile APKs. Light parts local, heavy part isolated in Lambda |
-| D4 | **No queue** (async Lambda invoke) | Redis/Celery; SQS | Async invoke already gives fire-and-forget + retries; hash-keyed results make retries safe; Lambda can't read a queue on a laptop behind NAT |
-| D5 | **Androguard only** | apktool + jadx | jadx/apktool need a JVM, more memory and time; Androguard is a Python library that also decompiles (DAD) and covers all v1 facts |
-| D6 | **Claude via the Anthropic API, orchestrated by LangGraph** | Amazon Bedrock; Bedrock Agents | Own agent design (tools, loop, verifier) is the core contribution; avoids a black-box managed agent; keeps the AWS footprint small |
-| D7 | **Models baked into the Lambda image** | SageMaker endpoint; separate model server | Small tree models load in milliseconds; no extra service or cost |
-| D8 | **PostgreSQL on the laptop** | DynamoDB | JSONB reports, SQL for stats and rate limits, easy local development |
-| D9 | **Cloudflare Tunnel** | ngrok; port forwarding; API Gateway | One public HTTPS URL for callback + dashboard with no router changes; a named tunnel gives a stable URL |
-| D10 | **AWS SAM** for infrastructure | Terraform; console clicks | One template for bucket, function, image repo, roles and log retention; repeatable; native image builds |
-| D11 | **Deterministic scoring + verifier** | Let the LLM score the app | Reproducible, explainable, robust to prompt injection |
-| D12 | **Hash cache keyed by `(sha256, pipeline_version)`** | No cache; hash only | "Scan once, protect everyone"; a pipeline change correctly invalidates old results |
-| D13 | **BM25 policy retrieval in v1** | sentence-transformers embeddings | Keeps torch out of the Lambda image (size, cold start); embeddings remain an upgrade |
-| D14 | **SDK list is `worker/data/sdk_signatures.json`** (was `trackers.json`), with a `library` category | Trackers only | The same list attributes call sites to bundled code, so it also needs non-tracker libraries (AppCompat, CameraX, OkHttp) |
-| D15 | **Extraction emits its own `extraction.v1` shape**, a superset of the `apk` + `facts` + `evidence` parts of `report.v1`; models live in `worker/src/pipeline/extraction/models.py` for now | Emit `report.v1` directly; put models in `packages/shared` now | Capabilities need call sites, `requested_unused` / `used_unrequested` and `call_site_count`; high-risk features need evidence. `report.v1` is not frozen yet, so fold these in when it is and move the models to `packages/shared` then |
-| D16 | **New evidence prefix `file_`** for files inside the APK (native libraries) | Reuse `man_` or `str_` | Neither describes an archive entry; §8.1 updated |
-| D17 | **High-risk feature rules are data** (`worker/data/high_risk_features.yaml`) | Hard-coded checks | Same "data, not if-chains" rule as the other curated lists; adds notification-listener detection for free |
-| D18 | **Androguard pinned to 4.1.4; DEX loaded without attaching the DAD decompiler** | `AnalyzeAPK()` | Lets load and analyse be timed separately; the adapter keeps the DEX objects so `get_method_source()` can attach the decompiler lazily later |
-| D19 | **Androguard log threshold: WARNING in the library, ERROR in the CLI** (`--verbose` restores WARNING) | WARNING everywhere | Normal APKs produce ~20 harmless "res1 must be zero!" warnings each, which would bury the CLI summary |
-| D20 | **IPv4 extraction drops dotted quads that start with 0/1/2 or use only single digits** (small allow-list for public DNS) | Report every valid quad | Almost all such strings in real APKs are ASN.1 object identifiers or version numbers, not addresses. Still a heuristic: treat `ip` endpoints as low-confidence |
-| D21 | **Stepping stone: `POST /scan` is synchronous with a file cache** (2026-10-09). It runs `analyze_apk` in the request (plain `def` route) and stores `data/reports/<sha256>__<pipeline_version>.json`; response is `{sha256, cached, pipeline_version, report_path, summary}` | Build the §7.2 flow (202 + callback, Postgres, internal token, rate limits) now | Gets Telegram → API → extractor working end to end first. No auth and no rate limit, so **local use only**. The §7.2 flow replaces it in P2/P3 |
-| D22 | **`GET /reports/{sha256}` serves the report; the bot fetches it over HTTP** and never reads the API's disk | Bot reads `report_path` | Keeps the bot a thin adapter that can run on another machine. Public URLs will use `scan_id`, not the hash (§7.2); the hash is acceptable only while this is local |
-| D23 | **One scan at a time**: a process-wide lock around the analysis; a request waits up to `SCAN_LOCK_TIMEOUT_S` (20 s), then gets `503` + `Retry-After: 60`. Cache hits never wait. Each scan logs duration and peak memory | Unbounded queueing; parallel scans | A single scan peaks at 0.4–1.3 GB (§7.7), so parallel scans can exhaust a laptop. In-process only: it does not coordinate several API processes, so run one uvicorn worker |
-| D24 | **Bot config variable is `API_URL`** (was `API_INTERNAL_URL`); bot summary is plain text with no parse mode | Markdown/HTML formatting | Plain text means APK-derived names cannot inject markup (§9.3). The §8.5 verdict format comes with the agent layer |
-| D25 | **Caption pass-through (2026-10-10):** the bot sends the Telegram caption as the `caption` form field on `POST /scan`; the API trims it and echoes it in `summary.caption`, and the bot shows it in the chat reply | Wait for the claim layer (§7.8) | Gets the bot → API contract closer to §7.2 early. The echo is **for testing only**: the caption is per request, so it is never written to the shared report cache and never logged. Remove the echo when the claim layer consumes it |
-
-New decisions go in `docs/adr/NNN-title.md`: context, decision, consequences, about 10 lines each.
+The decision log lives in [`docs/DECISIONS.md`](DECISIONS.md). The table that used to be here (D1–D25) was moved there with its numbers kept: D14 in this document is D-014 in that file. New decisions, and every development shortcut (`TEMPORARY-DEV`), go there too; there is no `docs/adr/` folder.
 
 ---
 
