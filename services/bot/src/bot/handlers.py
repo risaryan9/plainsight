@@ -75,7 +75,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
         try:
-            result = await api.scan(apk_path, "upload.apk")
+            result = await api.scan(apk_path, "upload.apk", caption=message.caption)
         except ApiError as exc:
             await message.reply_text(exc.user_message)
             return

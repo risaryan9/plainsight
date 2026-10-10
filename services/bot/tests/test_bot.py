@@ -48,6 +48,15 @@ def test_summary_says_when_the_result_was_cached() -> None:
     )
 
 
+def test_summary_shows_the_caption_on_one_line() -> None:
+    text = formatting.format_summary(
+        {**SUMMARY, "caption": "my cousin sent this\nas a wedding invite"}, cached=False
+    )
+    assert 'Your caption: "my cousin sent this as a wedding invite"' in text
+    assert text.endswith("Fresh scan.")
+    assert "caption" not in formatting.format_summary(SUMMARY, cached=False)
+
+
 def test_summary_stays_under_the_limit_for_huge_or_hostile_input() -> None:
     summary = {
         "package": "com." + "x" * 5000,
@@ -57,6 +66,7 @@ def test_summary_stays_under_the_limit_for_huge_or_hostile_input() -> None:
         "capabilities": [
             {"capability": "C" * 400 + str(i), "requested": True, "used": True} for i in range(100)
         ],
+        "caption": "c" * 5000,
     }
     assert len(formatting.format_summary(summary, cached=False)) < formatting.MAX_SUMMARY_CHARS
 
@@ -110,10 +120,11 @@ def test_scan_posts_the_file_and_parses_the_result(apk: Path) -> None:
             },
         )
 
-    result = asyncio.run(_client(handler).scan(apk, "upload.apk"))
+    result = asyncio.run(_client(handler).scan(apk, "upload.apk", caption="a wedding invite"))
 
     assert seen["url"] == "http://api.test/scan"
     assert b"pretend apk" in seen["body"]
+    assert b'name="caption"' in seen["body"] and b"a wedding invite" in seen["body"]
     assert (result.sha256, result.cached, result.pipeline_version) == ("a" * 64, True, "dev-0")
     assert result.summary == SUMMARY
 

@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from pipeline.extraction import InvalidApkError, analyze_apk, set_parser_log_level
@@ -39,6 +39,8 @@ _CHUNK_BYTES = 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # Multipart framing adds a little to the body on top of the file itself.
 _CONTENT_LENGTH_SLACK_BYTES = 64 * 1024
+# Telegram captions are at most 4096 characters.
+_MAX_CAPTION_CHARS = 4096
 
 
 @asynccontextmanager
@@ -105,14 +107,19 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
 
 
 def _response(
-    settings: Settings, sha256: str, report: dict[str, Any], *, cached: bool
+    settings: Settings,
+    sha256: str,
+    report: dict[str, Any],
+    *,
+    cached: bool,
+    caption: str | None,
 ) -> ScanResponse:
     return ScanResponse(
         sha256=sha256,
         cached=cached,
         pipeline_version=settings.pipeline_version,
         report_path=str(report_path_for(settings, sha256)),
-        summary=summarise(report),
+        summary=summarise(report, caption),
     )
 
 
@@ -124,7 +131,14 @@ def healthz() -> dict[str, bool]:
 # A plain `def` route: FastAPI runs it in a worker thread, so the blocking analysis does
 # not stall the event loop.
 @app.post("/scan")
-def scan(file: UploadFile, request: Request, settings: SettingsDep) -> ScanResponse:
+def scan(
+    file: UploadFile,
+    request: Request,
+    settings: SettingsDep,
+    caption: Annotated[str | None, Form(max_length=_MAX_CAPTION_CHARS)] = None,
+) -> ScanResponse:
+    # The caption is the uploader's own words: echoed in the response, never cached or logged.
+    caption = (caption or "").strip() or None
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > (
         settings.max_upload_bytes + _CONTENT_LENGTH_SLACK_BYTES
@@ -144,7 +158,7 @@ def scan(file: UploadFile, request: Request, settings: SettingsDep) -> ScanRespo
         cached = _load_report(report_path)
         if cached is not None:
             logger.info("scan sha256=%s cached=true", sha256)
-            return _response(settings, sha256, cached, cached=True)
+            return _response(settings, sha256, cached, cached=True, caption=caption)
 
         if not _scan_lock.acquire(timeout=settings.scan_lock_timeout_s):
             logger.info("scan sha256=%s rejected: another scan is running", sha256)
@@ -154,7 +168,7 @@ def scan(file: UploadFile, request: Request, settings: SettingsDep) -> ScanRespo
             cached = _load_report(report_path)
             if cached is not None:
                 logger.info("scan sha256=%s cached=true (finished while waiting)", sha256)
-                return _response(settings, sha256, cached, cached=True)
+                return _response(settings, sha256, cached, cached=True, caption=caption)
 
             with ScanMeter() as meter:
                 try:
@@ -174,7 +188,7 @@ def scan(file: UploadFile, request: Request, settings: SettingsDep) -> ScanRespo
             meter.duration_s,
             peak,
         )
-        return _response(settings, sha256, report, cached=False)
+        return _response(settings, sha256, report, cached=False, caption=caption)
     finally:
         apk_path.unlink(missing_ok=True)
 

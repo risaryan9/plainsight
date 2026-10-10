@@ -60,13 +60,14 @@ class ApiClient:
             base_url=self._base_url, timeout=self._timeout, transport=self._transport
         )
 
-    async def scan(self, apk_path: Path, file_name: str) -> ScanResult:
+    async def scan(self, apk_path: Path, file_name: str, caption: str | None = None) -> ScanResult:
         """Upload one APK and wait for the result. Raises :class:`ApiError` on any failure."""
+        data = {"caption": caption} if caption else None
         try:
             async with self._client() as client:
                 with open(apk_path, "rb") as fh:
                     files = {"file": (file_name, fh, "application/vnd.android.package-archive")}
-                    response = await client.post("/scan", files=files)
+                    response = await client.post("/scan", files=files, data=data)
         except httpx.TimeoutException as exc:
             logger.warning("POST /scan timed out: %r", exc)
             raise ApiError(MSG_TIMEOUT) from exc

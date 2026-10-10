@@ -9,6 +9,7 @@ MAX_APK_BYTES = 20 * 1024 * 1024
 _MAX_NAME_CHARS = 80
 _MAX_DANGEROUS_SHOWN = 6
 _MAX_CAPABILITIES_SHOWN = 8
+_MAX_CAPTION_CHARS = 200
 
 START_TEXT = (
     "Hi! I'm Plainsight. Send me an Android app file (.apk) and I'll tell you what it "
@@ -106,6 +107,10 @@ def format_summary(summary: dict[str, Any], *, cached: bool) -> str:
             lines.append(f"(+{len(usage) - _MAX_CAPABILITIES_SHOWN} more in the report)")
     else:
         lines.append("It asks for no sensitive capabilities, and none were found in its code.")
+
+    caption = " ".join(str(summary.get("caption") or "").split())
+    if caption:
+        lines += ["", f'Your caption: "{_clip(caption, _MAX_CAPTION_CHARS)}"']
 
     lines += ["", "Saved result from an earlier scan." if cached else "Fresh scan."]
     return _clip("\n".join(lines), MAX_SUMMARY_CHARS - 1)

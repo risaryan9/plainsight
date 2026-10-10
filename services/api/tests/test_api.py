@@ -77,8 +77,12 @@ def client(settings: Settings, analyzer: Analyzer) -> Iterator[TestClient]:
     api_main.app.dependency_overrides.clear()
 
 
-def upload(client: TestClient, data: bytes) -> Any:  # noqa: ANN401
-    return client.post("/scan", files={"file": ("app.apk", data, "application/octet-stream")})
+def upload(client: TestClient, data: bytes, caption: str | None = None) -> Any:  # noqa: ANN401
+    return client.post(
+        "/scan",
+        files={"file": ("app.apk", data, "application/octet-stream")},
+        data={"caption": caption} if caption is not None else None,
+    )
 
 
 def test_healthz(client: TestClient) -> None:
@@ -109,6 +113,7 @@ def test_scan_runs_the_analysis_and_saves_the_report(
             {"capability": "CAMERA", "requested": True, "used": False},
             {"capability": "STORAGE", "requested": False, "used": None},
         ],
+        "caption": None,
     }
     assert json.loads(report_path.read_text()) == fake_report()
 
@@ -123,6 +128,28 @@ def test_second_scan_of_the_same_file_is_served_from_the_cache(
     assert len(analyzer.paths) == 1
     assert second["cached"] is True
     assert {**second, "cached": False} == first
+
+
+def test_the_caption_is_echoed_but_never_stored_in_the_shared_report(
+    client: TestClient, analyzer: Analyzer, settings: Settings
+) -> None:
+    data = make_apk()
+
+    first = upload(client, data, caption="  my cousin sent this as a wedding invite ").json()
+    cached_other = upload(client, data, caption="from a different user").json()
+    cached_none = upload(client, data, caption="   ").json()
+
+    assert first["summary"]["caption"] == "my cousin sent this as a wedding invite"
+    assert cached_other["cached"] is True
+    assert cached_other["summary"]["caption"] == "from a different user"
+    assert cached_none["summary"]["caption"] is None
+    (report_file,) = settings.reports_dir.glob("*.json")
+    assert "wedding" not in report_file.read_text()
+
+
+def test_an_overlong_caption_is_rejected(client: TestClient, analyzer: Analyzer) -> None:
+    assert upload(client, make_apk(), caption="x" * 5000).status_code == 422
+    assert analyzer.paths == []
 
 
 def test_a_new_pipeline_version_rescans(

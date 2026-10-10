@@ -20,6 +20,8 @@ class ScanSummary(BaseModel):
     permission_count: int
     dangerous_permissions: list[str]
     capabilities: list[CapabilitySummary]
+    # The uploader's own note, echoed back. It is per request and never stored in the report.
+    caption: str | None = None
 
 
 class ScanResponse(BaseModel):
@@ -30,8 +32,8 @@ class ScanResponse(BaseModel):
     summary: ScanSummary
 
 
-def summarise(report: dict[str, Any]) -> ScanSummary:
-    """Build the short summary from a stored extraction report."""
+def summarise(report: dict[str, Any], caption: str | None = None) -> ScanSummary:
+    """Build the short summary from a stored extraction report, plus this request's caption."""
     apk = report["apk"]
     facts = report["facts"]
     permissions = facts["permissions"]
@@ -48,4 +50,5 @@ def summarise(report: dict[str, Any]) -> ScanSummary:
             )
             for c in facts["capabilities"]
         ],
+        caption=caption,
     )
