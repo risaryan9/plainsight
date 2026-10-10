@@ -17,7 +17,7 @@
 | | |
 |---|---|
 | **Status** | Draft reference (see the note above): hybrid demo architecture (laptop + one AWS Lambda) |
-| **Last updated** | 2026-10-09 |
+| **Last updated** | 2026-10-09 (extraction layer, local API and Telegram bot built; see §7.7 status and D14–D24) |
 | **Audience** | Developers on the project, and Claude Code |
 | **Read first** | §1 (summary), §5 (architecture), §8 (contracts), §20 (rules for Claude Code) |
 
@@ -497,7 +497,7 @@ def lambda_handler(event, context):
 - **Progress (optional):** if `status_message_id` is set, call `editMessageText` at the start of each stage ("Extracting…", "Scoring…", "Reasoning…"). Wrap these calls in a try/except, because a failed edit must never fail the scan.
 - **No per-request data in module globals.** Warm containers are reused across different users' scans.
 
-### 7.7 Extraction with Androguard (`worker/pipeline/extraction/`)
+### 7.7 Extraction with Androguard (`worker/src/pipeline/extraction/`)
 
 All Androguard calls go through **one adapter module** (`androguard_adapter.py`). Plainsight pins one Androguard version, and its API has changed between major versions, so the rest of the code must never import Androguard directly.
 
@@ -507,7 +507,7 @@ All Androguard calls go through **one adapter module** (`androguard_adapter.py`)
 | Permissions | declared permissions + protection level (normal/dangerous/signature) | Mapped to **capabilities** through `permission_map.yaml` |
 | API usage | calls to sensitive API methods (e.g. `MediaRecorder.start`, `AudioRecord.startRecording`, `SmsManager.sendTextMessage`, `LocationManager.requestLocationUpdates`, `ContactsContract` queries) | From a curated `sensitive_apis.yaml` (~40 entries to start). Gives **used vs requested** per permission |
 | Call sites | for each sensitive call: the calling method and its package | Used to tell "the app itself" apart from "a bundled SDK" |
-| SDKs / trackers | known library package prefixes found in the DEX | Bundled snapshot of a tracker-signature list (e.g. Exodus Privacy's ETIP list; check its licence) + a small custom list |
+| SDKs / trackers | known library package prefixes found in the DEX | `sdk_signatures.json`: package prefix → name + category. Starts as a small hand-written list (ads/analytics SDKs plus a few `library` entries); a snapshot of a tracker-signature list (e.g. Exodus Privacy's ETIP list; check its licence) can be merged in later |
 | Endpoints | hardcoded URLs, domains and IP addresses from the string pool | v1 records them; reputation lookup is future work |
 | Components | exported activities/services/receivers/providers, intent filters | Includes boot-completed receivers, SMS receivers and accessibility services |
 | High-risk features | accessibility service, device admin, overlay (`SYSTEM_ALERT_WINDOW`), `REQUEST_INSTALL_PACKAGES`, notification listener, dynamic code loading (`DexClassLoader`), reflection, native libs present | Each is a strong scam-APK signal |
@@ -515,6 +515,15 @@ All Androguard calls go through **one adapter module** (`androguard_adapter.py`)
 | Code index | method signatures → decompiled source (Androguard's DAD decompiler), produced lazily | Used by the agent tools; never stored whole in the report |
 
 **Evidence:** every fact above is created with an evidence id (§8.1) at extraction time. Later stages can only cite ids that already exist.
+
+**Status (2026-10-09): the extraction layer is built**, except the code index (decompiler), reflection detection and intent-filter data beyond action names. Entry point: `pipeline.extraction.analyze_apk(path) -> dict`; CLI: `uv run python -m pipeline.extraction.cli app.apk [--json]`. What was learned building it:
+
+- **Androguard 4.1.4** is pinned. It logs through **loguru**, not stdlib `logging`, and it parses everything in memory (no temp files).
+- **Cost:** parsing the DEX and building cross-references is ~95% of the run time: about 7 s, 18 s and 26 s for 8 MB, 4 MB and 11 MB APKs on a laptop, with **0.4–1.3 GB peak memory**. Size the Lambda memory and timeout from the DEX size, not the APK size.
+- **Field reads of framework classes are not cross-referenced by Androguard** (it only indexes fields of classes inside the APK), so `ContactsContract`/`CallLog`/`Telephony` constants are found by a separate scan of the DEX field table and bytecode.
+- **"Used" means "the code is present", not "the code runs".** Libraries carry guarded calls (AppCompat's night mode calls `getLastKnownLocation`; ACRA calls `getDeviceId`), which show up as *used but not requested*. `via_sdk` and the per-call-site `in_sdk` flag are how later stages should discount them.
+- **R8/ProGuard renaming defeats package-prefix matching**: a minified app's bundled libraries appear as app code (`Ll7;->S`), so SDK detection and `in_sdk` under-report on obfuscated APKs.
+- **Validation uses Python's `zipfile`**, which is stricter than Android's own ZIP parser. APKs with deliberately malformed ZIP headers (an anti-analysis trick) are rejected as invalid rather than analysed.
 
 ### 7.8 Claim side (`worker/pipeline/claim/`)
 
@@ -690,6 +699,7 @@ All contracts are defined **once** as pydantic models in `packages/shared/`, exp
 | `code_` | Decompiled snippet | `Lcom/ads/sdk/Rec;->start()V` (+ snippet ≤ 40 lines) |
 | `sdk_` | SDK fingerprint | `package prefix com.google.android.gms.ads` |
 | `str_` | String-pool hit (URL/IP/secret) | `string "https://collect.example.net/v2"` in `Lcom/x/Net;->send()V` |
+| `file_` | File inside the APK archive | `apk file lib/arm64-v8a/libfoo.so` |
 | `pol_` | Privacy-policy sentence | chunk #14 of the policy at `<url>` |
 | `abs_` | Policy absence record | query "audio recording microphone", best score 0.08 < 0.25 |
 | `lst_` | Store listing / caption | Play description, or the user's caption |
@@ -1083,7 +1093,7 @@ RUN pip install --no-cache-dir -r requirements.lock.txt --target "${LAMBDA_TASK_
 COPY packages/shared/src/ ${LAMBDA_TASK_ROOT}/
 COPY worker/src/ ${LAMBDA_TASK_ROOT}/
 COPY worker/models/ ${LAMBDA_TASK_ROOT}/models/
-COPY worker/data/ ${LAMBDA_TASK_ROOT}/data/        # permission_map.yaml, sensitive_apis.yaml, trackers.json, scoring.yaml
+COPY worker/data/ ${LAMBDA_TASK_ROOT}/data/        # permission_map.yaml, sensitive_apis.yaml, sdk_signatures.json, scoring.yaml
 CMD ["handler.lambda_handler"]
 ```
 
@@ -1130,14 +1140,16 @@ plainsight/
 │   │   ├── handler.py            # Lambda entry point
 │   │   └── pipeline/
 │   │       ├── run.py            # run_pipeline(): extraction → claim → features → ml → agents → scoring
-│   │       ├── extraction/       # androguard_adapter.py, manifest.py, api_usage.py, sdks.py, strings.py
+│   │       ├── extraction/       # analyze.py (analyze_apk), androguard_adapter.py, validate.py, models.py,
+│   │       │                     # api_usage.py, sdks.py, strings.py, evidence.py, knowledge.py, cli.py
 │   │       ├── claim/            # play.py, policy.py, chunking.py
 │   │       ├── features/         # vectorize.py, schema_guard.py
 │   │       ├── ml/               # inference.py, shap_explain.py, peer.py, stubs.py
 │   │       ├── agents/           # graph.py, nodes/, tools.py, prompts/, verifier.py
 │   │       ├── scoring.py
 │   │       └── delivery.py       # S3 write, callback, Telegram
-│   ├── data/                     # permission_map.yaml, sensitive_apis.yaml, trackers.json, severity_rules.yaml, scoring.yaml
+│   ├── data/                     # permission_map.yaml, sensitive_apis.yaml, sdk_signatures.json, high_risk_features.yaml,
+│   │                             # severity_rules.yaml, scoring.yaml
 │   ├── models/                   # gitignored; produced by ml/train.py
 │   ├── tests/
 │   ├── Dockerfile
@@ -1176,10 +1188,13 @@ plainsight/
 | Variable | Used by | Example / default | Notes |
 |---|---|---|---|
 | `PROJECT_SLUG` | all, SAM | `plainsight` | The only place the project name lives |
-| `PIPELINE_VERSION` | api, worker | `2026.10.0` | Cache key; bump on any analysis change |
+| `PIPELINE_VERSION` | api, worker | `dev-0` (code default); e.g. `2026.10.0` | Cache key; bump on any analysis change. Used in report file names, so letters, digits, `.`, `-`, `_` only |
 | `TELEGRAM_BOT_TOKEN` | bot, worker | — | From @BotFather |
 | `INTERNAL_TOKEN` | bot, api | random 32 bytes | Authorises bot → API |
-| `API_INTERNAL_URL` | bot | `http://api:8000` | Docker network address |
+| `API_URL` | bot | `http://localhost:8000` | Where the bot reaches the API (was `API_INTERNAL_URL`; `http://api:8000` under Compose) |
+| `REPORTS_DIR` | api | `data/reports` | Local report cache: `<sha256>__<pipeline_version>.json` (gitignored) |
+| `SCAN_LOCK_TIMEOUT_S` | api | `20` | How long `/scan` waits for a running scan before answering 503 |
+| `SCAN_TIMEOUT_S` | bot | `120` | How long the bot waits for `/scan` |
 | `PUBLIC_BASE_URL` | api | `https://<tunnel-host>` | Used to build `callback_url` / `report_url` |
 | `DATABASE_URL` | api | `postgresql+psycopg://app:app@postgres:5432/app` | |
 | `WORKER_MODE` | api | `local` \| `lambda` | `local` runs the pipeline in-process |
@@ -1469,6 +1484,17 @@ As the note at the top of this file says, the whole document is a **reference**.
 | D11 | **Deterministic scoring + verifier** | Let the LLM score the app | Reproducible, explainable, robust to prompt injection |
 | D12 | **Hash cache keyed by `(sha256, pipeline_version)`** | No cache; hash only | "Scan once, protect everyone"; a pipeline change correctly invalidates old results |
 | D13 | **BM25 policy retrieval in v1** | sentence-transformers embeddings | Keeps torch out of the Lambda image (size, cold start); embeddings remain an upgrade |
+| D14 | **SDK list is `worker/data/sdk_signatures.json`** (was `trackers.json`), with a `library` category | Trackers only | The same list attributes call sites to bundled code, so it also needs non-tracker libraries (AppCompat, CameraX, OkHttp) |
+| D15 | **Extraction emits its own `extraction.v1` shape**, a superset of the `apk` + `facts` + `evidence` parts of `report.v1`; models live in `worker/src/pipeline/extraction/models.py` for now | Emit `report.v1` directly; put models in `packages/shared` now | Capabilities need call sites, `requested_unused` / `used_unrequested` and `call_site_count`; high-risk features need evidence. `report.v1` is not frozen yet, so fold these in when it is and move the models to `packages/shared` then |
+| D16 | **New evidence prefix `file_`** for files inside the APK (native libraries) | Reuse `man_` or `str_` | Neither describes an archive entry; §8.1 updated |
+| D17 | **High-risk feature rules are data** (`worker/data/high_risk_features.yaml`) | Hard-coded checks | Same "data, not if-chains" rule as the other curated lists; adds notification-listener detection for free |
+| D18 | **Androguard pinned to 4.1.4; DEX loaded without attaching the DAD decompiler** | `AnalyzeAPK()` | Lets load and analyse be timed separately; the adapter keeps the DEX objects so `get_method_source()` can attach the decompiler lazily later |
+| D19 | **Androguard log threshold: WARNING in the library, ERROR in the CLI** (`--verbose` restores WARNING) | WARNING everywhere | Normal APKs produce ~20 harmless "res1 must be zero!" warnings each, which would bury the CLI summary |
+| D20 | **IPv4 extraction drops dotted quads that start with 0/1/2 or use only single digits** (small allow-list for public DNS) | Report every valid quad | Almost all such strings in real APKs are ASN.1 object identifiers or version numbers, not addresses. Still a heuristic: treat `ip` endpoints as low-confidence |
+| D21 | **Stepping stone: `POST /scan` is synchronous with a file cache** (2026-10-09). It runs `analyze_apk` in the request (plain `def` route) and stores `data/reports/<sha256>__<pipeline_version>.json`; response is `{sha256, cached, pipeline_version, report_path, summary}` | Build the §7.2 flow (202 + callback, Postgres, internal token, rate limits) now | Gets Telegram → API → extractor working end to end first. No auth and no rate limit, so **local use only**. The §7.2 flow replaces it in P2/P3 |
+| D22 | **`GET /reports/{sha256}` serves the report; the bot fetches it over HTTP** and never reads the API's disk | Bot reads `report_path` | Keeps the bot a thin adapter that can run on another machine. Public URLs will use `scan_id`, not the hash (§7.2); the hash is acceptable only while this is local |
+| D23 | **One scan at a time**: a process-wide lock around the analysis; a request waits up to `SCAN_LOCK_TIMEOUT_S` (20 s), then gets `503` + `Retry-After: 60`. Cache hits never wait. Each scan logs duration and peak memory | Unbounded queueing; parallel scans | A single scan peaks at 0.4–1.3 GB (§7.7), so parallel scans can exhaust a laptop. In-process only: it does not coordinate several API processes, so run one uvicorn worker |
+| D24 | **Bot config variable is `API_URL`** (was `API_INTERNAL_URL`); bot summary is plain text with no parse mode | Markdown/HTML formatting | Plain text means APK-derived names cannot inject markup (§9.3). The §8.5 verdict format comes with the agent layer |
 
 New decisions go in `docs/adr/NNN-title.md`: context, decision, consequences, about 10 lines each.
 
