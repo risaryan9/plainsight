@@ -9,7 +9,7 @@ MAX_APK_BYTES = 20 * 1024 * 1024
 _MAX_NAME_CHARS = 80
 _MAX_DANGEROUS_SHOWN = 6
 _MAX_CAPABILITIES_SHOWN = 8
-_MAX_CAPTION_CHARS = 200
+_MAX_CATEGORY_CHARS = 40
 
 START_TEXT = (
     "Hi! I'm Plainsight. Send me an Android app file (.apk) and I'll tell you what it "
@@ -20,7 +20,9 @@ HELP_TEXT = (
     "How to use me:\n"
     "1. Send or forward an .apk file to this chat (up to 20 MB).\n"
     "2. Wait a little; a scan can take up to a minute.\n"
-    "3. I reply with a short summary and the full report as a JSON file.\n\n"
+    "3. I reply with a short summary of what I found.\n\n"
+    "Tip: add a caption saying how you got the file. It helps me judge what the app "
+    "claims to be.\n\n"
     "Commands: /start, /help, /about"
 )
 ABOUT_TEXT = (
@@ -39,6 +41,9 @@ TOO_LARGE_TEXT = (
     "20 MB, so I can't scan it here."
 )
 REPORT_UNAVAILABLE_TEXT = "I couldn't attach the full report this time."
+DEV_FILE_TOO_LARGE_TEXT = (
+    "Skipped {file_name}: it is {size_mb:.1f} MB, over the 45 MB I can send here."
+)
 UNEXPECTED_ERROR_TEXT = "Something went wrong on my side. Please try again."
 
 
@@ -77,7 +82,46 @@ def _usage_line(capability: dict[str, Any]) -> str | None:
     return None
 
 
-def format_summary(summary: dict[str, Any], *, cached: bool) -> str:
+_POLICY_TEXT = {
+    "no_url": "no privacy policy",
+    "not_found": "privacy policy page not found",
+    "fetch_failed": "policy fetch failed",
+}
+_NO_LISTING_TEXT = {
+    "not_found": "not on Play Store",
+    "error": "Play Store lookup failed",
+    "skipped": "Play Store not checked",
+}
+
+
+def format_claim_line(claim: dict[str, Any]) -> str | None:
+    """One line saying where the claim came from, e.g.
+
+    ``Claim: Play Store · Tools · policy fetched (42 sentences)`` or
+    ``Claim: not on Play Store · using caption``. None when there is no claim.
+    """
+    if not claim:
+        return None
+    if claim.get("source") == "play_store":
+        parts = ["Play Store"]
+        if claim.get("category"):
+            parts.append(_clip(str(claim["category"]), _MAX_CATEGORY_CHARS))
+        status = claim.get("policy_status")
+        if status == "fetched":
+            parts.append(f"policy fetched ({len(claim.get('policy_chunks') or [])} sentences)")
+        else:
+            parts.append(_POLICY_TEXT.get(str(status), "policy unknown"))
+        if "claim_possible_impersonation" in (claim.get("flags") or []):
+            parts.append("app name differs from the listing")
+    else:
+        parts = [_NO_LISTING_TEXT.get(str(claim.get("play_lookup")), "no Play Store listing")]
+        parts.append("using caption" if claim.get("source") == "caption" else "using app name")
+    return "Claim: " + " · ".join(parts)
+
+
+def format_summary(
+    summary: dict[str, Any], *, cached: bool, claim: dict[str, Any] | None = None
+) -> str:
     """The chat reply for a finished scan. Always under ``MAX_SUMMARY_CHARS`` characters."""
     package = _clip(str(summary.get("package") or "unknown package"), _MAX_NAME_CHARS)
     label = summary.get("label")
@@ -108,9 +152,9 @@ def format_summary(summary: dict[str, Any], *, cached: bool) -> str:
     else:
         lines.append("It asks for no sensitive capabilities, and none were found in its code.")
 
-    caption = " ".join(str(summary.get("caption") or "").split())
-    if caption:
-        lines += ["", f'Your caption: "{_clip(caption, _MAX_CAPTION_CHARS)}"']
+    claim_line = format_claim_line(claim or {})
+    if claim_line:
+        lines += ["", claim_line]
 
     lines += ["", "Saved result from an earlier scan." if cached else "Fresh scan."]
     return _clip("\n".join(lines), MAX_SUMMARY_CHARS - 1)

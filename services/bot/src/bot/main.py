@@ -30,6 +30,7 @@ def build_application(settings: Settings) -> Application:  # type: ignore[type-a
     application.bot_data[handlers.API_CLIENT_KEY] = ApiClient(
         settings.api_url, timeout_s=settings.scan_timeout_s
     )
+    application.bot_data[handlers.DEV_SEND_JSON_KEY] = settings.dev_send_json
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help_command))
     application.add_handler(CommandHandler("about", handlers.about))
@@ -57,7 +58,7 @@ def main() -> int:
         )
         return 1
 
-    logger.info("starting; API at %s", settings.api_url)
+    logger.info("starting; API at %s; DEV_SEND_JSON=%s", settings.api_url, settings.dev_send_json)
     build_application(settings).run_polling(allowed_updates=Update.ALL_TYPES)
     return 0
 

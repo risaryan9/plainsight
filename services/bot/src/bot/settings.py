@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     api_url: str = "http://localhost:8000"
     scan_timeout_s: float = Field(default=120.0, gt=0)
+    # DEV-ONLY (D-035): also send the raw extraction and claim JSON files to the chat.
+    dev_send_json: bool = True
 
 
 @lru_cache(maxsize=1)

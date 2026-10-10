@@ -34,6 +34,7 @@ class ScanResult:
     cached: bool
     pipeline_version: str
     summary: dict[str, Any]
+    claim: dict[str, Any]
 
 
 def _detail(response: httpx.Response) -> str:
@@ -83,6 +84,7 @@ class ApiClient:
                     cached=bool(body["cached"]),
                     pipeline_version=str(body["pipeline_version"]),
                     summary=body["summary"],
+                    claim=body.get("claim") or {},
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 logger.error("POST /scan returned an unexpected body: %r", exc)
