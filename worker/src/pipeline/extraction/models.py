@@ -2,8 +2,10 @@
 
 The ``apk``, ``facts`` and ``evidence`` parts follow report.v1 (spec §8.4). ``facts`` is a
 superset: capabilities carry call sites and the requested/used flags, and high-risk
-features carry evidence. These models will move to ``packages/shared`` with the rest of
-the contracts.
+features carry evidence.
+
+# DEV-ONLY (D-015): these models move to ``packages/shared`` with the rest of the contracts
+# when report.v1 is frozen.
 """
 
 from __future__ import annotations
@@ -14,7 +16,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "extraction.v1"
 
-EvidenceKind = Literal["manifest", "api_call", "sdk", "string", "file"]
+EvidenceKind = Literal[
+    # Extraction (this package).
+    "manifest",
+    "api_call",
+    "sdk",
+    "string",
+    "file",
+    # Claim side (pipeline.claim).
+    "listing",
+    "caption",
+    "policy",
+    "claim",
+]
 ComponentType = Literal["activity", "service", "receiver", "provider"]
 
 
