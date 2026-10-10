@@ -1,0 +1,71 @@
+# High-risk feature -> how to detect it. A feature is flagged if ANY listed rule matches.
+#
+#   permissions   declared <uses-permission> names
+#   component     a manifest component of `type` that has ANY of the listed intent-filter
+#                 `actions` or is guarded by ANY of the listed `permissions`
+#   class_init    constructor calls on these classes (DEX descriptors)
+#   file_pattern  regex matched against file names inside the APK
+
+boot_completed_receiver:
+  description: Starts itself when the phone boots.
+  component:
+    type: receiver
+    actions:
+      - android.intent.action.BOOT_COMPLETED
+      - android.intent.action.LOCKED_BOOT_COMPLETED
+
+sms_receiver:
+  description: Is notified of incoming text messages.
+  component:
+    type: receiver
+    actions:
+      - android.provider.Telephony.SMS_RECEIVED
+      - android.provider.Telephony.SMS_DELIVER
+
+accessibility_service:
+  description: Declares an accessibility service, which can read the screen and act for the user.
+  component:
+    type: service
+    actions:
+      - android.accessibilityservice.AccessibilityService
+    permissions:
+      - android.permission.BIND_ACCESSIBILITY_SERVICE
+
+device_admin:
+  description: Can become a device administrator (lock or wipe the device, resist uninstall).
+  component:
+    type: receiver
+    actions:
+      - android.app.action.DEVICE_ADMIN_ENABLED
+    permissions:
+      - android.permission.BIND_DEVICE_ADMIN
+
+notification_listener:
+  description: Can read every notification, including messages and one-time passwords.
+  component:
+    type: service
+    actions:
+      - android.service.notification.NotificationListenerService
+    permissions:
+      - android.permission.BIND_NOTIFICATION_LISTENER_SERVICE
+
+overlay:
+  description: Can draw over other apps (SYSTEM_ALERT_WINDOW).
+  permissions:
+    - android.permission.SYSTEM_ALERT_WINDOW
+
+install_packages:
+  description: Can ask to install other apps (REQUEST_INSTALL_PACKAGES).
+  permissions:
+    - android.permission.REQUEST_INSTALL_PACKAGES
+
+dynamic_code_loading:
+  description: Creates a class loader that can load code that is not part of the reviewed APK.
+  class_init:
+    - Ldalvik/system/DexClassLoader;
+    - Ldalvik/system/PathClassLoader;
+    - Ldalvik/system/InMemoryDexClassLoader;
+
+native_libs:
+  description: Ships native libraries, which static analysis of the DEX code does not cover.
+  file_pattern: "^lib/[^/]+/[^/]+\\.so$"

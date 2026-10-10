@@ -1,0 +1,31 @@
+{
+  "_comment": "Java package prefix -> SDK name + category. The longest matching prefix wins. Categories: ads, analytics, crash_reporting, engagement, library. 'library' entries are not trackers; they exist so call sites inside them are not attributed to the app's own code.",
+  "signatures": [
+    { "prefix": "com.google.android.gms.ads", "name": "Google Mobile Ads", "category": "ads" },
+    { "prefix": "com.google.ads", "name": "Google Mobile Ads", "category": "ads" },
+    { "prefix": "com.google.firebase.analytics", "name": "Firebase Analytics", "category": "analytics" },
+    { "prefix": "com.google.android.gms.measurement", "name": "Firebase Analytics", "category": "analytics" },
+    { "prefix": "com.google.firebase.crashlytics", "name": "Firebase Crashlytics", "category": "crash_reporting" },
+    { "prefix": "com.facebook.ads", "name": "Facebook Audience Network", "category": "ads" },
+    { "prefix": "com.facebook.appevents", "name": "Facebook Analytics", "category": "analytics" },
+    { "prefix": "com.appsflyer", "name": "AppsFlyer", "category": "analytics" },
+    { "prefix": "com.adjust.sdk", "name": "Adjust", "category": "analytics" },
+    { "prefix": "com.unity3d.ads", "name": "Unity Ads", "category": "ads" },
+    { "prefix": "com.unity3d.services", "name": "Unity Ads", "category": "ads" },
+    { "prefix": "com.applovin", "name": "AppLovin", "category": "ads" },
+    { "prefix": "com.ironsource", "name": "ironSource", "category": "ads" },
+    { "prefix": "com.vungle", "name": "Vungle", "category": "ads" },
+    { "prefix": "com.inmobi", "name": "InMobi", "category": "ads" },
+    { "prefix": "com.chartboost.sdk", "name": "Chartboost", "category": "ads" },
+    { "prefix": "com.mixpanel.android", "name": "Mixpanel", "category": "analytics" },
+    { "prefix": "com.amplitude", "name": "Amplitude", "category": "analytics" },
+    { "prefix": "com.flurry", "name": "Flurry", "category": "analytics" },
+    { "prefix": "io.branch", "name": "Branch", "category": "analytics" },
+    { "prefix": "com.onesignal", "name": "OneSignal", "category": "engagement" },
+    { "prefix": "androidx.camera", "name": "AndroidX CameraX", "category": "library" },
+    { "prefix": "androidx.appcompat", "name": "AndroidX AppCompat", "category": "library" },
+    { "prefix": "com.google.android.gms.location", "name": "Google Play Services Location", "category": "library" },
+    { "prefix": "com.google.zxing", "name": "ZXing", "category": "library" },
+    { "prefix": "okhttp3", "name": "OkHttp", "category": "library" }
+  ]
+}

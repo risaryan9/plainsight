@@ -1,0 +1,28 @@
+# Android permission -> capability.
+# A capability is the plain-language thing the permission lets an app do. Several
+# permissions can map to one capability. Permissions not listed here get no capability.
+android.permission.RECORD_AUDIO: MICROPHONE
+android.permission.CAMERA: CAMERA
+android.permission.READ_CONTACTS: CONTACTS
+android.permission.WRITE_CONTACTS: CONTACTS
+android.permission.GET_ACCOUNTS: ACCOUNTS
+android.permission.ACCESS_FINE_LOCATION: PRECISE_LOCATION
+android.permission.ACCESS_COARSE_LOCATION: APPROX_LOCATION
+android.permission.ACCESS_BACKGROUND_LOCATION: BACKGROUND_LOCATION
+android.permission.READ_SMS: SMS_READ
+android.permission.RECEIVE_SMS: SMS_READ
+android.permission.RECEIVE_MMS: SMS_READ
+android.permission.SEND_SMS: SMS_SEND
+android.permission.READ_PHONE_STATE: PHONE_STATE
+android.permission.READ_PHONE_NUMBERS: PHONE_STATE
+android.permission.READ_CALL_LOG: CALL_LOG
+android.permission.WRITE_CALL_LOG: CALL_LOG
+android.permission.CALL_PHONE: PHONE_CALL
+android.permission.READ_CALENDAR: CALENDAR
+android.permission.WRITE_CALENDAR: CALENDAR
+android.permission.READ_EXTERNAL_STORAGE: STORAGE
+android.permission.WRITE_EXTERNAL_STORAGE: STORAGE
+android.permission.MANAGE_EXTERNAL_STORAGE: STORAGE
+android.permission.BODY_SENSORS: BODY_SENSORS
+android.permission.SYSTEM_ALERT_WINDOW: OVERLAY
+android.permission.REQUEST_INSTALL_PACKAGES: INSTALL_PACKAGES

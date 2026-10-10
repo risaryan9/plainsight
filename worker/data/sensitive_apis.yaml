@@ -1,0 +1,88 @@
+# Capability -> the code that shows the capability is actually USED.
+#
+# Each capability may list:
+#   description     plain-language sentence for the report
+#   satisfied_by    other capabilities whose permission also covers these APIs
+#                   (suppresses "used but not requested")
+#   methods         calls to named methods of one exact class (DEX type descriptor)
+#   class_prefixes  any method call or field read on a class whose descriptor starts
+#                   with the prefix (covers nested classes such as ContactsContract$Contacts)
+#   strings         substrings to look for in the string pool (content:// URIs)
+#
+# Class names are DEX descriptors: Lpackage/Class; with $ for nested classes.
+
+MICROPHONE:
+  description: Can record audio from the microphone.
+  methods:
+    - class: Landroid/media/MediaRecorder;
+      names: [setAudioSource]
+    - class: Landroid/media/AudioRecord;
+      names: ["<init>", startRecording]
+    - class: Landroid/media/AudioRecord$Builder;
+      names: [build]
+    - class: Landroid/speech/SpeechRecognizer;
+      names: [startListening]
+
+CAMERA:
+  description: Can take photos and record video with the camera.
+  methods:
+    - class: Landroid/hardware/Camera;
+      names: [open]
+    - class: Landroid/hardware/camera2/CameraManager;
+      names: [openCamera]
+    - class: Landroid/media/MediaRecorder;
+      names: [setVideoSource]
+    - class: Landroidx/camera/lifecycle/ProcessCameraProvider;
+      names: [bindToLifecycle]
+
+PRECISE_LOCATION:
+  description: Can read the device's location.
+  satisfied_by: [APPROX_LOCATION]
+  methods:
+    - class: Landroid/location/LocationManager;
+      names: [requestLocationUpdates, requestSingleUpdate, getLastKnownLocation, getCurrentLocation]
+    - class: Lcom/google/android/gms/location/FusedLocationProviderClient;
+      names: [getLastLocation, requestLocationUpdates, getCurrentLocation]
+
+CONTACTS:
+  description: Can read or change the contacts stored on the device.
+  class_prefixes:
+    - Landroid/provider/ContactsContract
+  strings:
+    - content://com.android.contacts
+
+SMS_READ:
+  description: Can read text messages (including one-time passwords).
+  methods:
+    - class: Landroid/telephony/SmsMessage;
+      names: [createFromPdu]
+  class_prefixes:
+    - Landroid/provider/Telephony$Sms
+  strings:
+    - content://sms
+
+SMS_SEND:
+  description: Can send text messages.
+  methods:
+    - class: Landroid/telephony/SmsManager;
+      names: [sendTextMessage, sendMultipartTextMessage, sendDataMessage]
+
+PHONE_STATE:
+  description: Can read phone identifiers such as the IMEI and phone number.
+  methods:
+    - class: Landroid/telephony/TelephonyManager;
+      names: [getDeviceId, getImei, getMeid, getSubscriberId, getLine1Number, getSimSerialNumber]
+
+CALL_LOG:
+  description: Can read or change the call history.
+  class_prefixes:
+    - Landroid/provider/CallLog
+  strings:
+    - content://call_log
+
+CALENDAR:
+  description: Can read or change calendar events.
+  class_prefixes:
+    - Landroid/provider/CalendarContract
+  strings:
+    - content://com.android.calendar
