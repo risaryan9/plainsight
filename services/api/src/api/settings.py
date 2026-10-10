@@ -14,6 +14,9 @@ class Settings(BaseSettings):
 
     # Where scan reports are written: <reports_dir>/<sha256>__<pipeline_version>.json
     reports_dir: Path = Path("data/reports")
+    # DEV-ONLY (D-029): the Play listing and privacy policy are cached per package as
+    # <claims_dir>/<package>.json.
+    claims_dir: Path = Path("data/claims")
     # Part of the cache key: change it to make every APK re-scan. It is used in file
     # names, so only letters, digits, dot, dash and underscore are allowed.
     pipeline_version: str = Field(default="dev-0", pattern=r"^[A-Za-z0-9._-]{1,64}$")

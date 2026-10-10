@@ -2,9 +2,10 @@
 
     uv run uvicorn api.main:app --port 8000
 
-``POST /scan`` is synchronous for now: it runs the extraction in the request and caches
-the result as a JSON file. The asynchronous, Lambda-backed flow from the spec (§7.2)
-replaces it later.
+# DEV-ONLY (D-021): ``POST /scan`` is synchronous. It runs the pipeline inside the request
+# and has no auth and no rate limit, so it is for local use only. The asynchronous,
+# Lambda-backed flow from the spec (§7.2) replaces it.
+# DEV-ONLY (D-026): reports are cached as JSON files instead of PostgreSQL + S3.
 """
 
 from __future__ import annotations
@@ -24,8 +25,10 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from pipeline.claim import Claim
 from pipeline.extraction import InvalidApkError, analyze_apk, set_parser_log_level
 from pipeline.extraction.validate import validate_apk
+from pipeline.run import run_pipeline
 
 from .metrics import ScanMeter
 from .schemas import ScanResponse, summarise
@@ -51,14 +54,25 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Plainsight API", version="0.1.0", lifespan=_lifespan)
 
-# One scan at a time: a single scan can peak above 1 GB of memory.
+# DEV-ONLY (D-023): one scan at a time, because a single scan can peak above 1 GB of
+# memory. The lock is in-process, so run a single uvicorn worker.
 _scan_lock = threading.Lock()
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 def report_path_for(settings: Settings, sha256: str) -> Path:
+    """The cached extraction report for an APK (D-012, D-026)."""
     return settings.reports_dir / f"{sha256}__{settings.pipeline_version}.json"
+
+
+def combined_report_path_for(settings: Settings, sha256: str) -> Path:
+    """The latest combined (extraction + claim) report for an APK.
+
+    # DEV-ONLY (D-034): saved for inspection only and overwritten by every request. It
+    # contains the sender's caption, so no endpoint serves it.
+    """
+    return settings.reports_dir / f"{sha256}__{settings.pipeline_version}.combined.json"
 
 
 def _too_large(settings: Settings) -> HTTPException:
@@ -106,21 +120,48 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
-def _response(
-    settings: Settings,
-    sha256: str,
-    report: dict[str, Any],
-    *,
-    cached: bool,
-    caption: str | None,
-) -> ScanResponse:
-    return ScanResponse(
-        sha256=sha256,
-        cached=cached,
-        pipeline_version=settings.pipeline_version,
-        report_path=str(report_path_for(settings, sha256)),
-        summary=summarise(report, caption),
+def _extraction_for(
+    settings: Settings, apk_path: Path, sha256: str, size: int
+) -> tuple[dict[str, Any], bool]:
+    """The extraction report for an APK, and whether it came from the cache.
+
+    Only extraction is cached per APK: it depends on nothing but the file (D-028).
+    """
+    report_path = report_path_for(settings, sha256)
+    cached = _load_report(report_path)
+    if cached is not None:
+        logger.info("scan sha256=%s cached=true", sha256)
+        return cached, True
+
+    if not _scan_lock.acquire(timeout=settings.scan_lock_timeout_s):
+        logger.info("scan sha256=%s rejected: another scan is running", sha256)
+        raise HTTPException(503, BUSY_MESSAGE, headers={"Retry-After": "60"})
+    try:
+        # The scan we waited for may have been this same file.
+        cached = _load_report(report_path)
+        if cached is not None:
+            logger.info("scan sha256=%s cached=true (finished while waiting)", sha256)
+            return cached, True
+
+        with ScanMeter() as meter:
+            try:
+                report = analyze_apk(str(apk_path))
+            except InvalidApkError as exc:
+                raise HTTPException(400, exc.reason) from exc
+        _write_report(report_path, report)
+    finally:
+        _scan_lock.release()
+
+    peak = f"{meter.peak_rss_mb:.0f}" if meter.peak_rss_mb is not None else "unknown"
+    logger.info(
+        "scan sha256=%s cached=false package=%s size_mb=%.1f duration_s=%.1f peak_rss_mb=%s",
+        sha256,
+        report["apk"]["package_name"],
+        size / 1_048_576,
+        meter.duration_s,
+        peak,
     )
+    return report, False
 
 
 @app.get("/healthz")
@@ -137,7 +178,8 @@ def scan(
     settings: SettingsDep,
     caption: Annotated[str | None, Form(max_length=_MAX_CAPTION_CHARS)] = None,
 ) -> ScanResponse:
-    # The caption is the uploader's own words: echoed in the response, never cached or logged.
+    # The caption is the sender's own words: it goes into the claim, never into the
+    # per-APK cache and never into the logs.
     caption = (caption or "").strip() or None
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > (
@@ -154,48 +196,44 @@ def scan(
         except InvalidApkError as exc:
             raise HTTPException(400, exc.reason) from exc
 
-        report_path = report_path_for(settings, sha256)
-        cached = _load_report(report_path)
-        if cached is not None:
-            logger.info("scan sha256=%s cached=true", sha256)
-            return _response(settings, sha256, cached, cached=True, caption=caption)
+        extraction, cached = _extraction_for(settings, apk_path, sha256, size)
 
-        if not _scan_lock.acquire(timeout=settings.scan_lock_timeout_s):
-            logger.info("scan sha256=%s rejected: another scan is running", sha256)
-            raise HTTPException(503, BUSY_MESSAGE, headers={"Retry-After": "60"})
-        try:
-            # The scan we waited for may have been this same file.
-            cached = _load_report(report_path)
-            if cached is not None:
-                logger.info("scan sha256=%s cached=true (finished while waiting)", sha256)
-                return _response(settings, sha256, cached, cached=True, caption=caption)
-
-            with ScanMeter() as meter:
-                try:
-                    report = analyze_apk(str(apk_path))
-                except InvalidApkError as exc:
-                    raise HTTPException(400, exc.reason) from exc
-            _write_report(report_path, report)
-        finally:
-            _scan_lock.release()
-
-        peak = f"{meter.peak_rss_mb:.0f}" if meter.peak_rss_mb is not None else "unknown"
-        logger.info(
-            "scan sha256=%s cached=false package=%s size_mb=%.1f duration_s=%.1f peak_rss_mb=%s",
-            sha256,
-            report["apk"]["package_name"],
-            size / 1_048_576,
-            meter.duration_s,
-            peak,
+        # The claim is rebuilt on every request, outside the scan lock: it is cheap, has
+        # its own per-package cache, and depends on this request's caption (D-028).
+        combined = run_pipeline(
+            apk_path, caption, extraction=extraction, claims_dir=settings.claims_dir
         )
-        return _response(settings, sha256, report, cached=False, caption=caption)
+        _write_report(combined_report_path_for(settings, sha256), combined)
+        claim = Claim.model_validate(combined["claim"])
+        logger.info(
+            "claim sha256=%s source=%s play=%s policy=%s chunks=%d flags=%s from_cache=%s ms=%s",
+            sha256,
+            claim.source,
+            claim.play_lookup,
+            claim.policy_status,
+            len(claim.policy_chunks),
+            ",".join(claim.flags) or "-",
+            claim.from_cache,
+            combined["meta"]["stage_ms"]["claim"],
+        )
+        return ScanResponse(
+            sha256=sha256,
+            cached=cached,
+            pipeline_version=settings.pipeline_version,
+            report_path=str(report_path_for(settings, sha256)),
+            summary=summarise(extraction),
+            claim=claim,
+        )
     finally:
         apk_path.unlink(missing_ok=True)
 
 
 @app.get("/reports/{sha256}")
 def get_report(sha256: str, settings: SettingsDep) -> FileResponse:
-    """The stored report for an APK hash, under the current pipeline version."""
+    """The stored extraction report for an APK hash, under the current pipeline version.
+
+    # DEV-ONLY (D-022): reports are addressed by APK hash. Public URLs will use scan ids.
+    """
     sha256 = sha256.lower()
     if not _SHA256_RE.match(sha256):
         raise HTTPException(404, "No report for that hash.")

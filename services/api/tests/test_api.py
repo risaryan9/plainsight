@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 
 import api.main as api_main
 from api.settings import Settings, get_settings
+from pipeline.claim import claim as claim_module
+from pipeline.claim.models import PlayListing, PlayLookup, PolicyChunk, PolicyResult
 from pipeline.extraction import InvalidApkError
 
 
@@ -29,6 +31,8 @@ def fake_report(package: str = "com.example.app") -> dict[str, Any]:
     return {
         "schema_version": "extraction.v1",
         "apk": {"package_name": package, "app_label": "Example"},
+        "evidence": {"man_001": {"kind": "manifest", "location": "manifest", "snippet": "x"}},
+        "meta": {"duration_ms": 10, "stage_ms": {"analyse": 9}},
         "facts": {
             "permissions": [
                 {"name": "android.permission.CAMERA", "protection": "dangerous"},
@@ -57,9 +61,52 @@ class Analyzer:
         return fake_report()
 
 
+class Play:
+    """Stands in for the Play Store lookup and the policy fetch (no network in tests)."""
+
+    def __init__(self) -> None:
+        self.on_play = False
+        self.lookups: list[str] = []
+
+    def fetch_listing(self, package_name: str) -> PlayLookup:
+        self.lookups.append(package_name)
+        if not self.on_play:
+            return PlayLookup(status="not_found", note="No Play Store listing.")
+        return PlayLookup(
+            status="found",
+            listing=PlayListing(
+                title="Example",
+                category="Tools",
+                privacy_policy_url="https://example.test/privacy",
+                url=f"https://play.google.com/store/apps/details?id={package_name}",
+            ),
+        )
+
+    def fetch_policy(self, url: str | None) -> PolicyResult:
+        return PolicyResult(
+            status="fetched",
+            url=url,
+            final_url=url,
+            chunks=[PolicyChunk(id="pol_001", text="We collect your email address.")],
+        )
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(_env_file=None, reports_dir=tmp_path / "reports", scan_lock_timeout_s=0.05)
+    return Settings(
+        _env_file=None,
+        reports_dir=tmp_path / "reports",
+        claims_dir=tmp_path / "claims",
+        scan_lock_timeout_s=0.05,
+    )
+
+
+@pytest.fixture(autouse=True)
+def play(monkeypatch: pytest.MonkeyPatch) -> Play:
+    fake = Play()
+    monkeypatch.setattr(claim_module, "fetch_listing", fake.fetch_listing)
+    monkeypatch.setattr(claim_module, "fetch_policy", fake.fetch_policy)
+    return fake
 
 
 @pytest.fixture
@@ -113,8 +160,9 @@ def test_scan_runs_the_analysis_and_saves_the_report(
             {"capability": "CAMERA", "requested": True, "used": False},
             {"capability": "STORAGE", "requested": False, "used": None},
         ],
-        "caption": None,
     }
+    assert body["claim"]["source"] == "app_label"
+    assert body["claim"]["flags"] == ["claim_not_on_play", "claim_no_policy"]
     assert json.loads(report_path.read_text()) == fake_report()
 
 
@@ -127,24 +175,66 @@ def test_second_scan_of_the_same_file_is_served_from_the_cache(
 
     assert len(analyzer.paths) == 1
     assert second["cached"] is True
-    assert {**second, "cached": False} == first
+    assert second["claim"]["from_cache"] is True
+    for body in (first, second):
+        del body["cached"], body["claim"]["from_cache"]
+    assert second == first
 
 
-def test_the_caption_is_echoed_but_never_stored_in_the_shared_report(
+def test_the_caption_goes_into_the_claim_but_never_into_the_shared_caches(
     client: TestClient, analyzer: Analyzer, settings: Settings
 ) -> None:
     data = make_apk()
+    sha256 = hashlib.sha256(data).hexdigest()
 
     first = upload(client, data, caption="  my cousin sent this as a wedding invite ").json()
     cached_other = upload(client, data, caption="from a different user").json()
     cached_none = upload(client, data, caption="   ").json()
 
-    assert first["summary"]["caption"] == "my cousin sent this as a wedding invite"
+    assert first["claim"]["source"] == "caption"
+    assert first["claim"]["caption"] == "my cousin sent this as a wedding invite"
+    assert "lst_002" in first["claim"]["evidence"]
+    # The extraction is cached per APK; the claim is rebuilt for each request's caption.
+    assert len(analyzer.paths) == 1
     assert cached_other["cached"] is True
-    assert cached_other["summary"]["caption"] == "from a different user"
-    assert cached_none["summary"]["caption"] is None
-    (report_file,) = settings.reports_dir.glob("*.json")
-    assert "wedding" not in report_file.read_text()
+    assert cached_other["claim"]["caption"] == "from a different user"
+    assert cached_none["claim"]["caption"] is None
+    assert cached_none["claim"]["source"] == "app_label"
+
+    # Neither cache that is shared between senders holds a caption.
+    extraction_file = settings.reports_dir / f"{sha256}__dev-0.json"
+    (claim_file,) = settings.claims_dir.glob("*.json")
+    assert claim_file.name == "com.example.app.json"
+    for shared in (extraction_file, claim_file):
+        assert "wedding" not in shared.read_text() and "different user" not in shared.read_text()
+    # ...and the report served by hash is the extraction only.
+    assert client.get(f"/reports/{sha256}").json() == fake_report()
+
+
+def test_the_combined_report_is_saved_but_not_served(
+    client: TestClient, play: Play, settings: Settings
+) -> None:
+    play.on_play = True
+    data = make_apk()
+    sha256 = hashlib.sha256(data).hexdigest()
+
+    body = upload(client, data, caption="a note").json()
+
+    assert body["claim"]["source"] == "play_store"
+    assert body["claim"]["category"] == "Tools"
+    assert body["claim"]["policy_status"] == "fetched"
+    assert [chunk["id"] for chunk in body["claim"]["policy_chunks"]] == ["pol_001"]
+    assert play.lookups == ["com.example.app"], "looked up by the manifest's package name"
+
+    combined = json.loads((settings.reports_dir / f"{sha256}__dev-0.combined.json").read_text())
+    assert list(combined) == ["schema_version", "apk", "facts", "claim", "evidence", "meta"]
+    assert combined["schema_version"] == "pipeline.v1"
+    assert combined["claim"] == body["claim"]
+    assert set(combined["evidence"]) == {"man_001", "lst_001", "lst_002", "pol_001"}
+    assert "claim" in combined["meta"]["stage_ms"]
+    # It holds the sender's caption, so no URL reaches it.
+    for name in (f"{sha256}.combined", f"{sha256}__dev-0.combined.json", f"{sha256}.combined.json"):
+        assert client.get(f"/reports/{name}").status_code == 404
 
 
 def test_an_overlong_caption_is_rejected(client: TestClient, analyzer: Analyzer) -> None:

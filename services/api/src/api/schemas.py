@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from pipeline.claim import Claim
+
 
 class CapabilitySummary(BaseModel):
     capability: str
@@ -20,8 +22,6 @@ class ScanSummary(BaseModel):
     permission_count: int
     dangerous_permissions: list[str]
     capabilities: list[CapabilitySummary]
-    # The uploader's own note, echoed back. It is per request and never stored in the report.
-    caption: str | None = None
 
 
 class ScanResponse(BaseModel):
@@ -30,10 +30,13 @@ class ScanResponse(BaseModel):
     pipeline_version: str
     report_path: str
     summary: ScanSummary
+    # DEV-ONLY (D-034): the claim is returned inline because the combined report, which
+    # holds the sender's caption, is not served by hash.
+    claim: Claim
 
 
-def summarise(report: dict[str, Any], caption: str | None = None) -> ScanSummary:
-    """Build the short summary from a stored extraction report, plus this request's caption."""
+def summarise(report: dict[str, Any]) -> ScanSummary:
+    """Build the short summary from a stored extraction report."""
     apk = report["apk"]
     facts = report["facts"]
     permissions = facts["permissions"]
@@ -50,5 +53,4 @@ def summarise(report: dict[str, Any], caption: str | None = None) -> ScanSummary
             )
             for c in facts["capabilities"]
         ],
-        caption=caption,
     )
