@@ -4,3 +4,36 @@ version = "0.1.0"
 description = "Android APK claim-vs-reality auditor"
 requires-python = ">=3.12"
 dependencies = []
+
+[dependency-groups]
+dev = [
+    "plainsight-api",
+    "plainsight-bot",
+    "plainsight-worker",
+    "httpx>=0.27",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[tool.uv.workspace]
+members = ["worker", "services/api", "services/bot"]
+
+[tool.uv.sources]
+plainsight-api = { workspace = true }
+plainsight-bot = { workspace = true }
+plainsight-worker = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "ANN", "C4", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "bot", "pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["worker/tests", "services/api/tests", "services/bot/tests"]
+# Each member has its own tests/ folder, so test modules are imported by path, not by name.
+addopts = ["--import-mode=importlib"]

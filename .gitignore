@@ -13,6 +13,9 @@
 models/
 ml/data/
 
+# Runtime data written by the API (scan reports). Root only: worker/data/ is tracked.
+/data/
+
 # Python
 __pycache__/
 *.py[cod]
